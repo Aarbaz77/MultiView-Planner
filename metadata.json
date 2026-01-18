@@ -1,0 +1,5 @@
+{
+  "name": "MultiView Planner",
+  "description": "A visual tool for planning multi-monitor setups. Compare screen sizes, aspect ratios, and orientations on an infinite canvas with snap-to-grid functionality.",
+  "requestFramePermissions": []
+}
