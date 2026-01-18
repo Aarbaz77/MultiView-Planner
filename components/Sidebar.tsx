@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Monitor as MonitorIcon, RotateCcw, Save, FolderOpen, Upload, Sun, Moon, Palette } from 'lucide-react';
+import { Plus, Trash2, Monitor as MonitorIcon, RotateCcw, Save, FolderOpen, Upload, Sun, Moon, Palette, Settings2, GripVertical } from 'lucide-react';
 import { Monitor, AspectRatio, CanvasStats, SavedLayout } from '../types';
 import { ASPECT_RATIOS, COLORS } from '../constants';
 import { formatDim } from '../utils';
@@ -11,18 +11,27 @@ interface SidebarProps {
   onRotate: (id: string) => void;
   onUpdateColor: (id: string, color: string) => void;
   onLoadLayout: (monitors: Monitor[]) => void;
+  onReorder: (startIndex: number, endIndex: number) => void;
   stats: CanvasStats;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
+  transparencyEnabled: boolean;
+  onToggleTransparency: () => void;
+  globalOpacity: number;
+  onOpacityChange: (value: number) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
-  monitors, onAdd, onRemove, onRotate, onUpdateColor, onLoadLayout, stats, theme, onToggleTheme 
+  monitors, onAdd, onRemove, onRotate, onUpdateColor, onLoadLayout, onReorder, stats, theme, onToggleTheme,
+  transparencyEnabled, onToggleTransparency, globalOpacity, onOpacityChange
 }) => {
   const [newDiag, setNewDiag] = useState<string>("27");
   const [ratioIdx, setRatioIdx] = useState<number>(0);
   const [customRatio, setCustomRatio] = useState<{ w: string, h: string }>({ w: "16", h: "9" });
   
+  // Reordering State
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
   // Storage State
   const [savedLayouts, setSavedLayouts] = useState<SavedLayout[]>([]);
   const [layoutName, setLayoutName] = useState("");
@@ -77,6 +86,18 @@ const Sidebar: React.FC<SidebarProps> = ({
     localStorage.setItem('mvp_saved_layouts', JSON.stringify(updated));
   };
 
+  // Native Drag and Drop Logic
+  const handleDragStart = (index: number) => {
+    setDraggedIndex(index);
+  };
+
+  const handleDragOver = (e: React.DragEvent, index: number) => {
+    e.preventDefault();
+    if (draggedIndex === null || draggedIndex === index) return;
+    onReorder(draggedIndex, index);
+    setDraggedIndex(index);
+  };
+
   const isDark = theme === 'dark';
 
   return (
@@ -99,6 +120,99 @@ const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       <div className="p-4 space-y-4 overflow-y-auto flex-1 custom-scrollbar">
+        {/* UNIVERSAL DISPLAY SETTINGS */}
+        <div className={`p-4 rounded-lg space-y-4 border transition-colors ${isDark ? 'bg-slate-900/50 border-slate-700' : 'bg-blue-50/50 border-blue-100'}`}>
+          <h2 className={`text-sm font-semibold uppercase tracking-wider flex items-center gap-2 ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>
+            <Settings2 size={14} /> Universal Settings
+          </h2>
+          
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-medium ${isDark ? 'text-slate-400' : 'text-slate-600'}`}>Enable Transparency</span>
+            <button 
+              onClick={onToggleTransparency}
+              className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none ${transparencyEnabled ? 'bg-blue-600' : 'bg-slate-400'}`}
+            >
+              <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${transparencyEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between items-center">
+              <label className={`text-[10px] font-bold uppercase tracking-tight ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Opacity Level</label>
+              <span className={`text-[10px] font-mono ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>{globalOpacity}%</span>
+            </div>
+            <input 
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              value={globalOpacity}
+              onChange={(e) => onOpacityChange(parseInt(e.target.value))}
+              className="w-full h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-blue-600"
+              disabled={!transparencyEnabled}
+            />
+          </div>
+        </div>
+
+        {/* LIST - Now Draggable */}
+        <div className="space-y-2">
+          <div className="flex justify-between items-center">
+            <h2 className={`text-sm font-semibold uppercase tracking-wider ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>Displays & Layers</h2>
+            <span className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded ${isDark ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-600'}`}>Top Layer at Start</span>
+          </div>
+          {monitors.length === 0 && <p className={`text-sm italic ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>No displays added.</p>}
+          
+          <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1 custom-scrollbar">
+            {monitors.map((m, index) => (
+              <div 
+                key={m.id} 
+                draggable
+                onDragStart={() => handleDragStart(index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDragEnd={() => setDraggedIndex(null)}
+                className={`p-3 rounded flex flex-col gap-2 border transition-all group ${
+                  draggedIndex === index ? 'opacity-40 scale-95' : 'opacity-100'
+                } ${isDark ? 'bg-slate-700 border-transparent hover:border-slate-500' : 'bg-slate-50 border-slate-200 hover:border-slate-300'} cursor-grab active:cursor-grabbing`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <GripVertical size={14} className={`flex-shrink-0 ${isDark ? 'text-slate-500' : 'text-slate-400'}`} />
+                    <button 
+                      onClick={() => setShowColorPicker(showColorPicker === m.id ? null : m.id)}
+                      className={`w-4 h-4 rounded-full ${m.color} ring-2 ring-offset-1 transition-all ${isDark ? 'ring-offset-slate-700 ring-white/20 hover:ring-white/50' : 'ring-offset-slate-50 ring-black/10 hover:ring-black/30'}`}
+                      title="Change color"
+                    ></button>
+                    <div>
+                      <div className={`text-sm font-medium transition-colors ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{m.diagonal}" {m.ratio.label.split(' ')[0]}</div>
+                      <div className={`text-[10px] uppercase tracking-wide font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{m.orientation}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => onRotate(m.id)} className={`p-1.5 rounded transition-colors ${isDark ? 'hover:bg-slate-600 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`} title="Rotate">
+                      <RotateCcw size={14} />
+                    </button>
+                    <button onClick={() => onRemove(m.id)} className={`p-1.5 rounded transition-colors ${isDark ? 'hover:bg-red-900/50 text-red-400' : 'hover:bg-red-100 text-red-600'}`} title="Remove">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {showColorPicker === m.id && (
+                  <div className="flex gap-1.5 flex-wrap p-2 rounded bg-black/10 animate-in fade-in zoom-in-95 duration-150">
+                    {COLORS.map((c) => (
+                      <button 
+                        key={c} 
+                        onClick={() => { onUpdateColor(m.id, c); setShowColorPicker(null); }}
+                        className={`w-5 h-5 rounded-full ${c} ${m.color === c ? 'ring-2 ring-white' : 'hover:scale-110'} transition-all`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* ADD FORM */}
         <div className={`p-4 rounded-lg space-y-3 border transition-colors ${isDark ? 'bg-slate-700/50 border-slate-600' : 'bg-slate-50 border-slate-200'}`}>
           <h2 className={`text-sm font-semibold uppercase tracking-wider ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>Add Display</h2>
@@ -162,52 +276,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           >
             <Plus size={16} /> Add Display
           </button>
-        </div>
-
-        {/* LIST */}
-        <div className="space-y-2">
-          <h2 className={`text-sm font-semibold uppercase tracking-wider ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>Current Setup</h2>
-          {monitors.length === 0 && <p className={`text-sm italic ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>No displays added.</p>}
-          
-          <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1 custom-scrollbar">
-            {monitors.map((m) => (
-              <div key={m.id} className={`p-3 rounded flex flex-col gap-2 border transition-colors group ${isDark ? 'bg-slate-700 border-transparent hover:border-slate-500' : 'bg-slate-50 border-slate-200 hover:border-slate-300'}`}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <button 
-                      onClick={() => setShowColorPicker(showColorPicker === m.id ? null : m.id)}
-                      className={`w-4 h-4 rounded-full ${m.color} ring-2 ring-offset-1 transition-all ${isDark ? 'ring-offset-slate-700 ring-white/20 hover:ring-white/50' : 'ring-offset-slate-50 ring-black/10 hover:ring-black/30'}`}
-                      title="Change color"
-                    ></button>
-                    <div>
-                      <div className={`text-sm font-medium transition-colors ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{m.diagonal}" {m.ratio.label}</div>
-                      <div className={`text-[10px] uppercase tracking-wide font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{m.orientation}</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={() => onRotate(m.id)} className={`p-1.5 rounded transition-colors ${isDark ? 'hover:bg-slate-600 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`} title="Rotate">
-                      <RotateCcw size={14} />
-                    </button>
-                    <button onClick={() => onRemove(m.id)} className={`p-1.5 rounded transition-colors ${isDark ? 'hover:bg-red-900/50 text-red-400' : 'hover:bg-red-100 text-red-600'}`} title="Remove">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-
-                {showColorPicker === m.id && (
-                  <div className="flex gap-1.5 flex-wrap p-2 rounded bg-black/10 animate-in fade-in zoom-in-95 duration-150">
-                    {COLORS.map((c) => (
-                      <button 
-                        key={c} 
-                        onClick={() => { onUpdateColor(m.id, c); setShowColorPicker(null); }}
-                        className={`w-5 h-5 rounded-full ${c} ${m.color === c ? 'ring-2 ring-white' : 'hover:scale-110'} transition-all`}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
         </div>
         
         {/* SAVED LAYOUTS SECTION */}

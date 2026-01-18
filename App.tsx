@@ -10,18 +10,22 @@ import { calculateDimensions } from './utils';
 export default function App() {
   const [monitors, setMonitors] = useState<Monitor[]>([
     { id: '1', diagonal: 27, ratio: { w: 16, h: 9, label: '16:9 (Standard)' }, orientation: 'landscape', x: 0, y: 0, color: COLORS[0] },
-    { id: '2', diagonal: 24, ratio: { w: 16, h: 9, label: '16:9 (Standard)' }, orientation: 'portrait', x: -28 * PPI_SCALE, y: 0, color: COLORS[1] }
+    { id: '2', diagonal: 24, ratio: { w: 16, h: 9, label: '16:9 (Standard)' }, orientation: 'portrait', x: 30 * PPI_SCALE, y: 0, color: COLORS[1] }
   ]);
   const [zoom, setZoom] = useState<number>(1);
-  const [pan, setPan] = useState<{ x: number, y: number }>({ x: 0, y: 0 });
+  const [pan, setPan] = useState<{ x: number, y: number }>({ x: 100, y: 100 });
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  
+  // Transparency Settings
+  const [transparencyEnabled, setTransparencyEnabled] = useState<boolean>(true);
+  const [globalOpacity, setGlobalOpacity] = useState<number>(65); // Changed default from 30 to 65
+
   const containerRef = useRef<HTMLDivElement>(null);
 
   // --- ACTIONS ---
   const addMonitor = (diagonal: number, ratio: AspectRatio) => {
     setMonitors(prev => [
-      ...prev,
       {
         id: Date.now().toString(),
         diagonal: diagonal,
@@ -29,7 +33,8 @@ export default function App() {
         orientation: 'landscape',
         x: 50, y: 50,
         color: COLORS[prev.length % COLORS.length]
-      }
+      },
+      ...prev,
     ]);
   };
 
@@ -43,6 +48,15 @@ export default function App() {
 
   const updateMonitorColor = (id: string, color: string) => {
     setMonitors(prev => prev.map(m => m.id === id ? { ...m, color } : m));
+  };
+
+  const reorderMonitors = (sourceIndex: number, destIndex: number) => {
+    setMonitors(prev => {
+      const result = Array.from(prev);
+      const [removed] = result.splice(sourceIndex, 1);
+      result.splice(destIndex, 0, removed);
+      return result;
+    });
   };
   
   const loadLayout = (loadedMonitors: Monitor[]) => {
@@ -145,9 +159,14 @@ export default function App() {
         onRotate={rotateMonitor}
         onUpdateColor={updateMonitorColor}
         onLoadLayout={loadLayout}
+        onReorder={reorderMonitors}
         stats={stats}
         theme={theme}
         onToggleTheme={toggleTheme}
+        transparencyEnabled={transparencyEnabled}
+        onToggleTransparency={() => setTransparencyEnabled(!transparencyEnabled)}
+        globalOpacity={globalOpacity}
+        onOpacityChange={setGlobalOpacity}
       />
       
       <div 
@@ -168,7 +187,7 @@ export default function App() {
         >
           <div className={`absolute top-0 left-0 w-4 h-4 -translate-x-1/2 -translate-y-1/2 border-l border-t ${isDark ? 'border-slate-600/50' : 'border-slate-400'}`}></div>
 
-          {monitors.map(m => (
+          {monitors.map((m, index) => (
             <MonitorItem 
               key={m.id} 
               monitor={m} 
@@ -176,6 +195,9 @@ export default function App() {
               isDragging={dragState?.id === m.id} 
               onMouseDown={(e, id) => handleMouseDown(e, 'monitor', id)} 
               theme={theme}
+              transparencyEnabled={transparencyEnabled}
+              globalOpacity={globalOpacity}
+              zIndex={monitors.length - index}
             />
           ))}
         </div>
