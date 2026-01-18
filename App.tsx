@@ -13,15 +13,18 @@ export default function App() {
     { id: '2', diagonal: 24, ratio: { w: 16, h: 9, label: '16:9 (Standard)' }, orientation: 'portrait', x: 30 * PPI_SCALE, y: 0, color: COLORS[1] }
   ]);
   const [zoom, setZoom] = useState<number>(1);
-  const [pan, setPan] = useState<{ x: number, y: number }>({ x: 100, y: 100 });
+  const [pan, setPan] = useState<{ x: number, y: number }>({ x: 150, y: 150 });
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   
   // Transparency Settings
   const [transparencyEnabled, setTransparencyEnabled] = useState<boolean>(true);
-  const [globalOpacity, setGlobalOpacity] = useState<number>(65); // Changed default from 30 to 65
+  const [globalOpacity, setGlobalOpacity] = useState<number>(65);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  // Ref for snap threshold calculation to avoid stale closures in effects
+  const zoomRef = useRef(zoom);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   // --- ACTIONS ---
   const addMonitor = (diagonal: number, ratio: AspectRatio) => {
@@ -31,7 +34,7 @@ export default function App() {
         diagonal: diagonal,
         ratio,
         orientation: 'landscape',
-        x: 50, y: 50,
+        x: 100, y: 100,
         color: COLORS[prev.length % COLORS.length]
       },
       ...prev,
@@ -67,6 +70,7 @@ export default function App() {
 
   // --- DRAG HANDLERS ---
   const handleMouseDown = (e: React.MouseEvent, type: 'monitor' | 'pan', id: string | null = null) => {
+    if (e.button !== 0) return; // Only left click
     e.preventDefault();
     const targetM = type === 'monitor' ? monitors.find(m => m.id === id) : null;
     setDragState({
@@ -82,37 +86,41 @@ export default function App() {
     if (!dragState) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      const dx = (e.clientX - dragState.startX) / (dragState.type === 'monitor' ? zoom : 1);
-      const dy = (e.clientY - dragState.startY) / (dragState.type === 'monitor' ? zoom : 1);
+      const dx = (e.clientX - dragState.startX) / (dragState.type === 'monitor' ? zoomRef.current : 1);
+      const dy = (e.clientY - dragState.startY) / (dragState.type === 'monitor' ? zoomRef.current : 1);
 
       if (dragState.type === 'monitor' && dragState.id) {
-        let newX = dragState.initialX + dx;
-        let newY = dragState.initialY + dy;
-        
-        const SNAP_THRESHOLD = 15 / zoom;
-        let snappedX = false;
-        let snappedY = false;
-        
-        const currentM = monitors.find(m => m.id === dragState.id);
-        if (currentM) {
+        setMonitors(currentMonitors => {
+          const currentM = currentMonitors.find(m => m.id === dragState.id);
+          if (!currentM) return currentMonitors;
+
+          let newX = dragState.initialX + dx;
+          let newY = dragState.initialY + dy;
+          
+          const SNAP_THRESHOLD = 15 / zoomRef.current;
+          let snappedX = false;
+          let snappedY = false;
+          
           let { width: wIn, height: hIn } = calculateDimensions(currentM.diagonal, currentM.ratio.w, currentM.ratio.h);
           if (currentM.orientation === 'portrait') [wIn, hIn] = [hIn, wIn];
           const curW = wIn * PPI_SCALE;
           const curH = hIn * PPI_SCALE;
 
-          monitors.forEach(other => {
+          currentMonitors.forEach(other => {
             if (other.id === dragState.id) return;
             let { width: owIn, height: ohIn } = calculateDimensions(other.diagonal, other.ratio.w, other.ratio.h);
             if (other.orientation === 'portrait') [owIn, ohIn] = [ohIn, owIn];
             const otherL = other.x, otherR = other.x + (owIn * PPI_SCALE);
             const otherT = other.y, otherB = other.y + (ohIn * PPI_SCALE);
             
+            // X Snap
             if (!snappedX) {
               if (Math.abs(newX - otherR) < SNAP_THRESHOLD) { newX = otherR; snappedX = true; }
               else if (Math.abs((newX + curW) - otherL) < SNAP_THRESHOLD) { newX = otherL - curW; snappedX = true; }
               else if (Math.abs(newX - otherL) < SNAP_THRESHOLD) { newX = otherL; snappedX = true; }
               else if (Math.abs((newX + curW) - otherR) < SNAP_THRESHOLD) { newX = otherR - curW; snappedX = true; }
             }
+            // Y Snap
             if (!snappedY) {
               if (Math.abs(newY - otherB) < SNAP_THRESHOLD) { newY = otherB; snappedY = true; }
               else if (Math.abs((newY + curH) - otherT) < SNAP_THRESHOLD) { newY = otherT - curH; snappedY = true; }
@@ -120,10 +128,14 @@ export default function App() {
               else if (Math.abs((newY + curH) - otherB) < SNAP_THRESHOLD) { newY = otherB - curH; snappedY = true; }
             }
           });
-        }
-        setMonitors(prev => prev.map(m => m.id === dragState.id ? { ...m, x: newX, y: newY } : m));
+
+          return currentMonitors.map(m => m.id === dragState.id ? { ...m, x: newX, y: newY } : m);
+        });
       } else {
-        setPan({ x: dragState.initialX + (e.clientX - dragState.startX), y: dragState.initialY + (e.clientY - dragState.startY) });
+        setPan({ 
+          x: dragState.initialX + (e.clientX - dragState.startX), 
+          y: dragState.initialY + (e.clientY - dragState.startY) 
+        });
       }
     };
 
@@ -134,7 +146,7 @@ export default function App() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState, monitors, zoom, pan]);
+  }, [dragState]); // Only re-run when dragging starts or stops
 
   const stats: CanvasStats = useMemo(() => {
     let totalArea = 0, minX = Infinity, maxX = -Infinity;
@@ -206,8 +218,8 @@ export default function App() {
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className={`text-center ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
               <MousePointer2 className="mx-auto mb-2 opacity-50" size={48} />
-              <p className="text-lg">Canvas is empty</p>
-              <p className="text-sm">Use the sidebar to add a display</p>
+              <p className="text-lg font-semibold">Canvas is empty</p>
+              <p className="text-sm opacity-70">Use the sidebar to add a display</p>
             </div>
           </div>
         )}
