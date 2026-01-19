@@ -146,7 +146,7 @@ export default function App() {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [dragState]); // Only re-run when dragging starts or stops
+  }, [dragState]);
 
   const stats: CanvasStats = useMemo(() => {
     let totalArea = 0, minX = Infinity, maxX = -Infinity;
@@ -206,6 +206,8 @@ export default function App() {
               zoom={zoom} 
               isDragging={dragState?.id === m.id} 
               onMouseDown={(e, id) => handleMouseDown(e, 'monitor', id)} 
+              onRotate={rotateMonitor}
+              onRemove={removeMonitor}
               theme={theme}
               transparencyEnabled={transparencyEnabled}
               globalOpacity={globalOpacity}

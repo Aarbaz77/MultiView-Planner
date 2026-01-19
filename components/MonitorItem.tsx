@@ -1,4 +1,5 @@
 import React from 'react';
+import { RotateCcw, Trash2 } from 'lucide-react';
 import { Monitor } from '../types';
 import { calculateDimensions, formatDim } from '../utils';
 import { PPI_SCALE } from '../constants';
@@ -8,6 +9,8 @@ interface MonitorItemProps {
   zoom: number;
   isDragging: boolean;
   onMouseDown: (e: React.MouseEvent, id: string) => void;
+  onRotate: (id: string) => void;
+  onRemove: (id: string) => void;
   theme: 'dark' | 'light';
   transparencyEnabled: boolean;
   globalOpacity: number;
@@ -15,7 +18,7 @@ interface MonitorItemProps {
 }
 
 const MonitorItem: React.FC<MonitorItemProps> = ({ 
-  monitor, isDragging, onMouseDown, theme, transparencyEnabled, globalOpacity, zIndex
+  monitor, isDragging, onMouseDown, onRotate, onRemove, theme, transparencyEnabled, globalOpacity, zIndex
 }) => {
   const { width, height } = calculateDimensions(monitor.diagonal, monitor.ratio.w, monitor.ratio.h);
   
@@ -67,12 +70,35 @@ const MonitorItem: React.FC<MonitorItemProps> = ({
           </span>
         </div>
 
-        {/* Hover Information Layer - Stays opaque on hover relative to the body */}
-        <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-xs text-white pointer-events-none p-2 text-center z-20">
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-left font-medium">
-            <span className="text-slate-400">Width:</span> <span>{formatDim(widthIn)}</span>
-            <span className="text-slate-400">Height:</span> <span>{formatDim(heightIn)}</span>
-            <span className="text-slate-400">Area:</span> <span>{Math.round(widthIn * heightIn)} in²</span>
+        {/* Hover Action Layer */}
+        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center z-20">
+          {/* Action Buttons */}
+          <div className="absolute top-2 right-2 flex gap-1 pointer-events-auto">
+            <button 
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onRotate(monitor.id); }}
+              className="p-1.5 rounded-full bg-white/20 hover:bg-white/40 text-white transition-colors"
+              title="Rotate Screen"
+            >
+              <RotateCcw size={14} />
+            </button>
+            <button 
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => { e.stopPropagation(); onRemove(monitor.id); }}
+              className="p-1.5 rounded-full bg-red-500/80 hover:bg-red-500 text-white transition-colors"
+              title="Delete Screen"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+
+          {/* Stats Info */}
+          <div className="pointer-events-none text-xs text-white text-center p-2">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-left font-medium">
+              <span className="text-white/60">W:</span> <span>{formatDim(widthIn).split(' ')[0]} cm</span>
+              <span className="text-white/60">H:</span> <span>{formatDim(heightIn).split(' ')[0]} cm</span>
+              <span className="text-white/60">Area:</span> <span>{Math.round(widthIn * heightIn)} in²</span>
+            </div>
           </div>
         </div>
       </div>
