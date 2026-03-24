@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, Monitor as MonitorIcon, RotateCcw, Save, FolderOpen, Upload, Sun, Moon, Palette, Settings2, GripVertical } from 'lucide-react';
 import { Monitor, AspectRatio, CanvasStats, SavedLayout } from '../types';
-import { ASPECT_RATIOS, COLORS } from '../constants';
+import { ASPECT_RATIOS, COLORS, MONITOR_MODELS } from '../constants';
 import { formatDim } from '../utils';
 
 interface SidebarProps {
@@ -216,6 +216,38 @@ const Sidebar: React.FC<SidebarProps> = ({
         {/* ADD FORM */}
         <div className={`p-4 rounded-lg space-y-3 border transition-colors ${isDark ? 'bg-slate-700/50 border-slate-600' : 'bg-slate-50 border-slate-200'}`}>
           <h2 className={`text-sm font-semibold uppercase tracking-wider ${isDark ? 'text-slate-300' : 'text-slate-600'}`}>Add Display</h2>
+
+          <div>
+            <label className={`block text-xs mb-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Presets</label>
+            <select 
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val !== "") {
+                  const model = MONITOR_MODELS[parseInt(val)];
+                  setNewDiag(model.diagonal.toString());
+                  const rIdx = ASPECT_RATIOS.findIndex(r => r.w === model.ratio.w && r.h === model.ratio.h);
+                  setRatioIdx(rIdx !== -1 ? rIdx : -1);
+                  if (rIdx === -1) {
+                    setCustomRatio({ w: model.ratio.w.toString(), h: model.ratio.h.toString() });
+                  }
+                  e.target.value = "";
+                }
+              }}
+              className={`w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-600 text-slate-100' : 'bg-white border-slate-300 text-slate-900'}`}
+              defaultValue=""
+            >
+              <option value="" disabled>Choose a model...</option>
+              {MONITOR_MODELS.map((m, idx) => (
+                <option key={idx} value={idx}>{m.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2 my-2">
+            <div className={`flex-1 h-px ${isDark ? 'bg-slate-600' : 'bg-slate-300'}`}></div>
+            <span className={`text-[10px] uppercase font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>OR CUSTOM</span>
+            <div className={`flex-1 h-px ${isDark ? 'bg-slate-600' : 'bg-slate-300'}`}></div>
+          </div>
           
           <div>
             <label className={`block text-xs mb-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Diagonal Size (inches)</label>

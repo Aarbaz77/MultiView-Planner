@@ -4,6 +4,12 @@ export interface AspectRatio {
   h: number;
 }
 
+export interface MonitorModel {
+  name: string;
+  diagonal: number;
+  ratio: AspectRatio;
+}
+
 export interface Monitor {
   id: string;
   diagonal: number;
