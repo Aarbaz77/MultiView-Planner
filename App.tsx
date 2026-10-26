@@ -3,9 +3,11 @@ import { MousePointer2 } from 'lucide-react';
 import MonitorItem from './components/MonitorItem';
 import Sidebar from './components/Sidebar';
 import CanvasToolbar from './components/CanvasToolbar';
-import { Monitor, DragState, AspectRatio, CanvasStats } from './types';
-import { COLORS, PPI_SCALE } from './constants';
-import { calculateDimensions } from './utils';
+import Scene3D from './components/Scene3D';
+import ViewModeToggle from './components/ViewModeToggle';
+import { Monitor, DragState, AspectRatio, CanvasStats, MountOption } from './types';
+import { COLORS, PPI_SCALE, MOUNT_CAPACITY } from './constants';
+import { calculateDimensions, getMonitorSizeIn, pickMountMembers, snapMonitorPosition } from './utils';
 
 export default function App() {
   const [monitors, setMonitors] = useState<Monitor[]>([
@@ -16,6 +18,7 @@ export default function App() {
   const [pan, setPan] = useState<{ x: number, y: number }>({ x: 150, y: 150 });
   const [dragState, setDragState] = useState<DragState | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+  const [viewMode, setViewMode] = useState<'2d' | '3d'>('2d');
   
   // Transparency Settings
   const [transparencyEnabled, setTransparencyEnabled] = useState<boolean>(true);
@@ -27,12 +30,13 @@ export default function App() {
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
 
   // --- ACTIONS ---
-  const addMonitor = (diagonal: number, ratio: AspectRatio) => {
+  const addMonitor = (diagonal: number, ratio: AspectRatio, curve?: number) => {
     setMonitors(prev => [
       {
         id: Date.now().toString(),
         diagonal: diagonal,
         ratio,
+        curve,
         orientation: 'landscape',
         x: 100, y: 100,
         color: COLORS[prev.length % COLORS.length]
@@ -53,6 +57,18 @@ export default function App() {
     setMonitors(prev => prev.map(m => m.id === id ? { ...m, color } : m));
   };
 
+  const updateMonitor = (id: string, changes: Partial<Pick<Monitor, 'diagonal' | 'ratio' | 'curve' | 'angle' | 'depth'>>) => {
+    setMonitors(prev => prev.map(m => m.id === id ? { ...m, ...changes } : m));
+  };
+
+  // Used by the 3D view, which works out positions in canvas units itself
+  const moveMonitor = (id: string, x: number, y: number, snapThreshold: number) => {
+    setMonitors(prev => {
+      const snapped = snapMonitorPosition(prev, id, x, y, snapThreshold);
+      return prev.map(m => m.id === id ? { ...m, ...snapped } : m);
+    });
+  };
+
   const reorderMonitors = (sourceIndex: number, destIndex: number) => {
     setMonitors(prev => {
       const result = Array.from(prev);
@@ -62,6 +78,17 @@ export default function App() {
     });
   };
   
+  const applyMount = (targetId: string, option: MountOption) => {
+    setMonitors(prev => {
+      if (option === 'stand') return prev.map(m => m.id === targetId ? { ...m, mount: undefined } : m);
+      const memberIds = pickMountMembers(prev, targetId, MOUNT_CAPACITY[option]);
+      const groupId = Date.now().toString();
+      return prev.map(m => memberIds.includes(m.id) ? { ...m, mount: { kind: option, groupId } } : m);
+    });
+  };
+
+  const clearMounts = () => setMonitors(prev => prev.map(m => ({ ...m, mount: undefined })));
+
   const loadLayout = (loadedMonitors: Monitor[]) => {
     setMonitors(loadedMonitors);
   };
@@ -90,46 +117,12 @@ export default function App() {
       const dy = (e.clientY - dragState.startY) / (dragState.type === 'monitor' ? zoomRef.current : 1);
 
       if (dragState.type === 'monitor' && dragState.id) {
+        const id = dragState.id;
         setMonitors(currentMonitors => {
-          const currentM = currentMonitors.find(m => m.id === dragState.id);
-          if (!currentM) return currentMonitors;
-
-          let newX = dragState.initialX + dx;
-          let newY = dragState.initialY + dy;
-          
-          const SNAP_THRESHOLD = 15 / zoomRef.current;
-          let snappedX = false;
-          let snappedY = false;
-          
-          let { width: wIn, height: hIn } = calculateDimensions(currentM.diagonal, currentM.ratio.w, currentM.ratio.h);
-          if (currentM.orientation === 'portrait') [wIn, hIn] = [hIn, wIn];
-          const curW = wIn * PPI_SCALE;
-          const curH = hIn * PPI_SCALE;
-
-          currentMonitors.forEach(other => {
-            if (other.id === dragState.id) return;
-            let { width: owIn, height: ohIn } = calculateDimensions(other.diagonal, other.ratio.w, other.ratio.h);
-            if (other.orientation === 'portrait') [owIn, ohIn] = [ohIn, owIn];
-            const otherL = other.x, otherR = other.x + (owIn * PPI_SCALE);
-            const otherT = other.y, otherB = other.y + (ohIn * PPI_SCALE);
-            
-            // X Snap
-            if (!snappedX) {
-              if (Math.abs(newX - otherR) < SNAP_THRESHOLD) { newX = otherR; snappedX = true; }
-              else if (Math.abs((newX + curW) - otherL) < SNAP_THRESHOLD) { newX = otherL - curW; snappedX = true; }
-              else if (Math.abs(newX - otherL) < SNAP_THRESHOLD) { newX = otherL; snappedX = true; }
-              else if (Math.abs((newX + curW) - otherR) < SNAP_THRESHOLD) { newX = otherR - curW; snappedX = true; }
-            }
-            // Y Snap
-            if (!snappedY) {
-              if (Math.abs(newY - otherB) < SNAP_THRESHOLD) { newY = otherB; snappedY = true; }
-              else if (Math.abs((newY + curH) - otherT) < SNAP_THRESHOLD) { newY = otherT - curH; snappedY = true; }
-              else if (Math.abs(newY - otherT) < SNAP_THRESHOLD) { newY = otherT; snappedY = true; }
-              else if (Math.abs((newY + curH) - otherB) < SNAP_THRESHOLD) { newY = otherB - curH; snappedY = true; }
-            }
-          });
-
-          return currentMonitors.map(m => m.id === dragState.id ? { ...m, x: newX, y: newY } : m);
+          const snapped = snapMonitorPosition(
+            currentMonitors, id, dragState.initialX + dx, dragState.initialY + dy, 15 / zoomRef.current
+          );
+          return currentMonitors.map(m => m.id === id ? { ...m, ...snapped } : m);
         });
       } else {
         setPan({ 
@@ -153,7 +146,7 @@ export default function App() {
     monitors.forEach(m => {
       const { width, height } = calculateDimensions(m.diagonal, m.ratio.w, m.ratio.h);
       totalArea += width * height;
-      const wPx = (m.orientation === 'landscape' ? width : height) * PPI_SCALE;
+      const wPx = getMonitorSizeIn(m).w * PPI_SCALE;
       minX = Math.min(minX, m.x);
       maxX = Math.max(maxX, m.x + wPx);
     });
@@ -170,6 +163,7 @@ export default function App() {
         onRemove={removeMonitor} 
         onRotate={rotateMonitor}
         onUpdateColor={updateMonitorColor}
+        onUpdateMonitor={updateMonitor}
         onLoadLayout={loadLayout}
         onReorder={reorderMonitors}
         stats={stats}
@@ -181,48 +175,56 @@ export default function App() {
         onOpacityChange={setGlobalOpacity}
       />
       
-      <div 
-        ref={containerRef}
-        className={`flex-1 relative overflow-hidden cursor-grab active:cursor-grabbing ${isDark ? 'bg-slate-950' : 'bg-slate-100'}`}
-        onMouseDown={(e) => handleMouseDown(e, 'pan')}
-        style={{ 
-          backgroundImage: `radial-gradient(circle, ${isDark ? '#334155' : '#cbd5e1'} 1px, transparent 1px)`, 
-          backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
-          backgroundPosition: `${pan.x}px ${pan.y}px`
-        }}
-      >
-        <CanvasToolbar zoom={zoom} setZoom={setZoom} theme={theme} />
+      <div className="flex-1 relative overflow-hidden">
+        <ViewModeToggle mode={viewMode} onChange={setViewMode} theme={theme} />
 
-        <div 
-          className="absolute origin-top-left transition-transform duration-75"
-          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
-        >
-          <div className={`absolute top-0 left-0 w-4 h-4 -translate-x-1/2 -translate-y-1/2 border-l border-t ${isDark ? 'border-slate-600/50' : 'border-slate-400'}`}></div>
+        {viewMode === '3d' ? (
+          <Scene3D monitors={monitors} theme={theme} onApplyMount={applyMount} onClearMounts={clearMounts} onMoveMonitor={moveMonitor} onUpdateMonitor={updateMonitor} />
+        ) : (
+          <div 
+            ref={containerRef}
+            className={`absolute inset-0 overflow-hidden cursor-grab active:cursor-grabbing ${isDark ? 'bg-slate-950' : 'bg-slate-100'}`}
+            onMouseDown={(e) => handleMouseDown(e, 'pan')}
+            style={{ 
+              backgroundImage: `radial-gradient(circle, ${isDark ? '#334155' : '#cbd5e1'} 1px, transparent 1px)`, 
+              backgroundSize: `${20 * zoom}px ${20 * zoom}px`,
+              backgroundPosition: `${pan.x}px ${pan.y}px`
+            }}
+          >
+            <CanvasToolbar zoom={zoom} setZoom={setZoom} theme={theme} />
 
-          {monitors.map((m, index) => (
-            <MonitorItem 
-              key={m.id} 
-              monitor={m} 
-              zoom={zoom} 
-              isDragging={dragState?.id === m.id} 
-              onMouseDown={(e, id) => handleMouseDown(e, 'monitor', id)} 
-              onRotate={rotateMonitor}
-              onRemove={removeMonitor}
-              theme={theme}
-              transparencyEnabled={transparencyEnabled}
-              globalOpacity={globalOpacity}
-              zIndex={monitors.length - index}
-            />
-          ))}
-        </div>
+            <div 
+              className="absolute origin-top-left transition-transform duration-75"
+              style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+            >
+              <div className={`absolute top-0 left-0 w-4 h-4 -translate-x-1/2 -translate-y-1/2 border-l border-t ${isDark ? 'border-slate-600/50' : 'border-slate-400'}`}></div>
 
-        {monitors.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className={`text-center ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
-              <MousePointer2 className="mx-auto mb-2 opacity-50" size={48} />
-              <p className="text-lg font-semibold">Canvas is empty</p>
-              <p className="text-sm opacity-70">Use the sidebar to add a display</p>
+              {monitors.map((m, index) => (
+                <MonitorItem 
+                  key={m.id} 
+                  monitor={m} 
+                  zoom={zoom} 
+                  isDragging={dragState?.id === m.id} 
+                  onMouseDown={(e, id) => handleMouseDown(e, 'monitor', id)} 
+                  onRotate={rotateMonitor}
+                  onRemove={removeMonitor}
+                  theme={theme}
+                  transparencyEnabled={transparencyEnabled}
+                  globalOpacity={globalOpacity}
+                  zIndex={monitors.length - index}
+                />
+              ))}
             </div>
+
+            {monitors.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className={`text-center ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
+                  <MousePointer2 className="mx-auto mb-2 opacity-50" size={48} />
+                  <p className="text-lg font-semibold">Canvas is empty</p>
+                  <p className="text-sm opacity-70">Use the sidebar to add a display</p>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

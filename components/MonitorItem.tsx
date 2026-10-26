@@ -1,7 +1,7 @@
 import React from 'react';
 import { RotateCcw, Trash2 } from 'lucide-react';
 import { Monitor } from '../types';
-import { calculateDimensions, formatDim } from '../utils';
+import { getMonitorSizeIn, formatDim } from '../utils';
 import { PPI_SCALE } from '../constants';
 
 interface MonitorItemProps {
@@ -20,11 +20,8 @@ interface MonitorItemProps {
 const MonitorItem: React.FC<MonitorItemProps> = ({ 
   monitor, isDragging, onMouseDown, onRotate, onRemove, theme, transparencyEnabled, globalOpacity, zIndex
 }) => {
-  const { width, height } = calculateDimensions(monitor.diagonal, monitor.ratio.w, monitor.ratio.h);
-  
-  // Swap dimensions if portrait
-  const widthIn = monitor.orientation === 'landscape' ? width : height;
-  const heightIn = monitor.orientation === 'landscape' ? height : width;
+  // Front-view footprint, already swapped for portrait and narrowed for curved panels
+  const { w: widthIn, h: heightIn } = getMonitorSizeIn(monitor);
 
   const widthPx = widthIn * PPI_SCALE;
   const heightPx = heightIn * PPI_SCALE;
@@ -66,7 +63,7 @@ const MonitorItem: React.FC<MonitorItemProps> = ({
             {monitor.diagonal}"
           </span>
           <span className="text-[10px] text-white font-bold drop-shadow-md font-mono mt-1 select-none uppercase tracking-widest bg-black/20 px-1 rounded">
-            {monitor.ratio.label.split(' ')[0]}
+            {monitor.ratio.label.split(' ')[0]}{monitor.curve ? ` · ${monitor.curve}R` : ''}{monitor.angle ? ` · ${monitor.angle}°` : ''}
           </span>
         </div>
 

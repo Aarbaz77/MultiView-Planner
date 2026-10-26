@@ -10,6 +10,14 @@ export interface MonitorModel {
   ratio: AspectRatio;
 }
 
+export type MountKind = 'single' | 'dual' | 'triple';
+export type MountOption = 'stand' | MountKind;
+
+export interface MonitorMount {
+  kind: MountKind;
+  groupId: string;
+}
+
 export interface Monitor {
   id: string;
   diagonal: number;
@@ -18,6 +26,10 @@ export interface Monitor {
   x: number;
   y: number;
   color: string;
+  mount?: MonitorMount; // VESA arm group; no mount means a desk stand
+  curve?: number; // Curvature radius in mm (1800 = 1800R); undefined means flat
+  depth?: number; // Forward (+) or back (-) from the monitor wall in inches, used by the 3D view
+  angle?: number; // Turn around the vertical axis in degrees, used by the 3D view; positive turns it to face right (left edge forward)
 }
 
 export interface DragState {

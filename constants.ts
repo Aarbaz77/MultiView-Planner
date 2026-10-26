@@ -1,4 +1,4 @@
-import { AspectRatio, MonitorModel } from './types';
+import { AspectRatio, MonitorModel, MountKind } from './types';
 
 export const PPI_SCALE = 15;
 
@@ -47,3 +47,12 @@ export const MONITOR_MODELS: MonitorModel[] = [
   { name: 'Samsung Odyssey Neo G8 32"', diagonal: 32, ratio: { label: '16:9 (Standard)', w: 16, h: 9 } },
   { name: 'BenQ PD2700U 27"', diagonal: 27, ratio: { label: '16:9 (Standard)', w: 16, h: 9 } },
 ];
+
+export const MOUNT_CAPACITY: Record<MountKind, number> = {
+  single: 1,
+  dual: 2,
+  triple: 3,
+};
+
+// Common curvature radii in mm, tightest first
+export const CURVE_OPTIONS = [800, 1000, 1500, 1800, 2300, 3000, 3800];

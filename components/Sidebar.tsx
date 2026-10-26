@@ -1,15 +1,118 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Monitor as MonitorIcon, RotateCcw, Save, FolderOpen, Upload, Sun, Moon, Palette, Settings2, GripVertical } from 'lucide-react';
+import { Plus, Trash2, Monitor as MonitorIcon, RotateCcw, Save, FolderOpen, Upload, Sun, Moon, Palette, Settings2, GripVertical, Pencil, Check } from 'lucide-react';
 import { Monitor, AspectRatio, CanvasStats, SavedLayout } from '../types';
-import { ASPECT_RATIOS, COLORS, MONITOR_MODELS } from '../constants';
+import { ASPECT_RATIOS, COLORS, MONITOR_MODELS, CURVE_OPTIONS } from '../constants';
 import { formatDim } from '../utils';
+
+const DEFAULT_CURVE = 1800;
+
+const inputClass = (isDark: boolean) =>
+  `w-full border rounded px-2 py-1.5 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${isDark ? 'bg-slate-900 border-slate-600 text-slate-100' : 'bg-white border-slate-300 text-slate-900'}`;
+
+const labelClass = (isDark: boolean) => `block text-xs mb-1 ${isDark ? 'text-slate-400' : 'text-slate-500'}`;
+
+// Flat/curved switch plus a curvature picker, shared by the add form and the inline editor
+const CurveField: React.FC<{ curve?: number; onChange: (curve?: number) => void; isDark: boolean }> = ({ curve, onChange, isDark }) => (
+  <div className="space-y-2">
+    <div className="flex items-center justify-between">
+      <span className={`text-xs ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Curved Screen</span>
+      <button
+        onClick={() => onChange(curve ? undefined : DEFAULT_CURVE)}
+        className={`relative inline-flex h-5 w-10 items-center rounded-full transition-colors focus:outline-none ${curve ? 'bg-blue-600' : 'bg-slate-400'}`}
+        title={curve ? 'Make flat' : 'Make curved'}
+      >
+        <span className={`inline-block h-3 w-3 transform rounded-full bg-white transition-transform ${curve ? 'translate-x-6' : 'translate-x-1'}`} />
+      </button>
+    </div>
+    {curve !== undefined && (
+      <div>
+        <label className={labelClass(isDark)}>Curvature (smaller = more curved)</label>
+        <select value={curve} onChange={(e) => onChange(parseInt(e.target.value))} className={inputClass(isDark)}>
+          {CURVE_OPTIONS.map(r => <option key={r} value={r}>{r}R</option>)}
+        </select>
+      </div>
+    )}
+  </div>
+);
+
+// Inline editor for an existing display; every valid change applies straight away
+const MonitorEditor: React.FC<{
+  monitor: Monitor;
+  isDark: boolean;
+  onChange: (changes: Partial<Pick<Monitor, 'diagonal' | 'ratio' | 'curve'>>) => void;
+}> = ({ monitor, isDark, onChange }) => {
+  const presetIdx = ASPECT_RATIOS.findIndex(r => r.w === monitor.ratio.w && r.h === monitor.ratio.h);
+  const [diag, setDiag] = useState(monitor.diagonal.toString());
+  const [ratioIdx, setRatioIdx] = useState(presetIdx);
+  const [custom, setCustom] = useState({ w: monitor.ratio.w.toString(), h: monitor.ratio.h.toString() });
+
+  const applyCustom = (next: { w: string; h: string }) => {
+    setCustom(next);
+    const w = parseFloat(next.w), h = parseFloat(next.h);
+    if (w > 0 && h > 0) onChange({ ratio: { w, h, label: `${w}:${h}` } });
+  };
+
+  return (
+    <div
+      className={`p-3 rounded space-y-3 border cursor-default ${isDark ? 'bg-slate-800/70 border-slate-600' : 'bg-white border-slate-200'}`}
+    >
+      <div>
+        <label className={labelClass(isDark)}>Diagonal Size (inches)</label>
+        <input
+          type="number"
+          value={diag}
+          min="5" max="100"
+          onChange={(e) => {
+            setDiag(e.target.value);
+            const value = parseFloat(e.target.value);
+            if (value > 0 && value <= 150) onChange({ diagonal: value });
+          }}
+          className={inputClass(isDark)}
+        />
+      </div>
+
+      <div>
+        <label className={labelClass(isDark)}>Aspect Ratio</label>
+        <select
+          value={ratioIdx}
+          onChange={(e) => {
+            const idx = parseInt(e.target.value);
+            setRatioIdx(idx);
+            if (idx === -1) applyCustom(custom);
+            else onChange({ ratio: ASPECT_RATIOS[idx] });
+          }}
+          className={inputClass(isDark)}
+        >
+          {ASPECT_RATIOS.map((r, idx) => <option key={idx} value={idx}>{r.label}</option>)}
+          <option value={-1}>Custom...</option>
+        </select>
+      </div>
+
+      {ratioIdx === -1 && (
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={labelClass(isDark)}>Width Ratio</label>
+            <input type="number" value={custom.w} onChange={(e) => applyCustom({ ...custom, w: e.target.value })} className={inputClass(isDark)} />
+          </div>
+          <div>
+            <label className={labelClass(isDark)}>Height Ratio</label>
+            <input type="number" value={custom.h} onChange={(e) => applyCustom({ ...custom, h: e.target.value })} className={inputClass(isDark)} />
+          </div>
+        </div>
+      )}
+
+      <CurveField curve={monitor.curve} onChange={(curve) => onChange({ curve })} isDark={isDark} />
+    </div>
+  );
+};
 
 interface SidebarProps {
   monitors: Monitor[];
-  onAdd: (diagonal: number, ratio: AspectRatio) => void;
+  onAdd: (diagonal: number, ratio: AspectRatio, curve?: number) => void;
   onRemove: (id: string) => void;
   onRotate: (id: string) => void;
   onUpdateColor: (id: string, color: string) => void;
+  onUpdateMonitor: (id: string, changes: Partial<Pick<Monitor, 'diagonal' | 'ratio' | 'curve'>>) => void;
   onLoadLayout: (monitors: Monitor[]) => void;
   onReorder: (startIndex: number, endIndex: number) => void;
   stats: CanvasStats;
@@ -22,12 +125,14 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ 
-  monitors, onAdd, onRemove, onRotate, onUpdateColor, onLoadLayout, onReorder, stats, theme, onToggleTheme,
+  monitors, onAdd, onRemove, onRotate, onUpdateColor, onUpdateMonitor, onLoadLayout, onReorder, stats, theme, onToggleTheme,
   transparencyEnabled, onToggleTransparency, globalOpacity, onOpacityChange
 }) => {
   const [newDiag, setNewDiag] = useState<string>("27");
   const [ratioIdx, setRatioIdx] = useState<number>(0);
   const [customRatio, setCustomRatio] = useState<{ w: string, h: string }>({ w: "16", h: "9" });
+  const [newCurve, setNewCurve] = useState<number | undefined>(undefined);
+  const [editingId, setEditingId] = useState<string | null>(null);
   
   // Reordering State
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
@@ -62,7 +167,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     
     const diag = parseFloat(newDiag);
     if (!isNaN(diag) && diag > 0) {
-        onAdd(diag, finalRatio);
+        onAdd(diag, finalRatio, newCurve);
     }
   };
 
@@ -166,13 +271,13 @@ const Sidebar: React.FC<SidebarProps> = ({
             {monitors.map((m, index) => (
               <div 
                 key={m.id} 
-                draggable
+                draggable={editingId !== m.id}
                 onDragStart={() => handleDragStart(index)}
                 onDragOver={(e) => handleDragOver(e, index)}
                 onDragEnd={() => setDraggedIndex(null)}
                 className={`p-3 rounded flex flex-col gap-2 border transition-all group ${
                   draggedIndex === index ? 'opacity-40 scale-95' : 'opacity-100'
-                } ${isDark ? 'bg-slate-700 border-transparent hover:border-slate-500' : 'bg-slate-50 border-slate-200 hover:border-slate-300'} cursor-grab active:cursor-grabbing`}
+                } ${isDark ? 'bg-slate-700 border-transparent hover:border-slate-500' : 'bg-slate-50 border-slate-200 hover:border-slate-300'} ${editingId === m.id ? '' : 'cursor-grab active:cursor-grabbing'}`}
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -183,11 +288,18 @@ const Sidebar: React.FC<SidebarProps> = ({
                       title="Change color"
                     ></button>
                     <div>
-                      <div className={`text-sm font-medium transition-colors ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{m.diagonal}" {m.ratio.label.split(' ')[0]}</div>
+                      <div className={`text-sm font-medium transition-colors ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{m.diagonal}" {m.ratio.label.split(' ')[0]}{m.curve ? ` · ${m.curve}R` : ''}</div>
                       <div className={`text-[10px] uppercase tracking-wide font-semibold ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>{m.orientation}</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className={`flex items-center gap-1 transition-opacity ${editingId === m.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                    <button
+                      onClick={() => setEditingId(editingId === m.id ? null : m.id)}
+                      className={`p-1.5 rounded transition-colors ${editingId === m.id ? (isDark ? 'bg-blue-600/30 text-blue-300' : 'bg-blue-100 text-blue-600') : (isDark ? 'hover:bg-slate-600 text-slate-300' : 'hover:bg-slate-200 text-slate-600')}`}
+                      title={editingId === m.id ? 'Done editing' : 'Edit size, ratio & curve'}
+                    >
+                      {editingId === m.id ? <Check size={14} /> : <Pencil size={14} />}
+                    </button>
                     <button onClick={() => onRotate(m.id)} className={`p-1.5 rounded transition-colors ${isDark ? 'hover:bg-slate-600 text-slate-300' : 'hover:bg-slate-200 text-slate-600'}`} title="Rotate">
                       <RotateCcw size={14} />
                     </button>
@@ -196,6 +308,10 @@ const Sidebar: React.FC<SidebarProps> = ({
                     </button>
                   </div>
                 </div>
+
+                {editingId === m.id && (
+                  <MonitorEditor monitor={m} isDark={isDark} onChange={(changes) => onUpdateMonitor(m.id, changes)} />
+                )}
 
                 {showColorPicker === m.id && (
                   <div className="flex gap-1.5 flex-wrap p-2 rounded bg-black/10 animate-in fade-in zoom-in-95 duration-150">
@@ -302,7 +418,9 @@ const Sidebar: React.FC<SidebarProps> = ({
             </div>
           )}
 
-          <button 
+          <CurveField curve={newCurve} onChange={setNewCurve} isDark={isDark} />
+
+          <button
             onClick={handleAddClick}
             className={`w-full py-2 rounded-md flex items-center justify-center gap-2 text-sm font-medium transition-colors ${isDark ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
           >
