@@ -18,6 +18,8 @@
           background: rgba(100, 116, 139, 0.2);
           border-radius: 10px;
         }
+        .no-scrollbar { scrollbar-width: none; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
           background: rgba(100, 116, 139, 0.4);
         }
@@ -29,6 +31,7 @@
       }
       #root {
         height: 100vh;
+        height: 100dvh; /* excludes mobile browser bars where supported */
         width: 100vw;
       }
     </style>

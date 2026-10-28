@@ -17,8 +17,8 @@ const ViewModeToggle: React.FC<ViewModeToggleProps> = ({ mode, onChange, theme }
 
   return (
     <div
-      className={`absolute top-4 left-4 flex gap-1 backdrop-blur p-1 rounded-lg border shadow-xl z-40 transition-colors duration-300 ${isDark ? 'bg-slate-800/90 border-slate-700' : 'bg-white/90 border-slate-200'}`}
-      onMouseDown={e => e.stopPropagation()}
+      className={`flex gap-1 h-10 items-center backdrop-blur p-1 rounded-lg border shadow-xl transition-colors duration-300 ${isDark ? 'bg-slate-800/90 border-slate-700' : 'bg-white/90 border-slate-200'}`}
+      onPointerDown={e => e.stopPropagation()}
       onDoubleClick={e => e.stopPropagation()}
     >
       {options.map(opt => {

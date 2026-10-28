@@ -1,16 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { usePinchZoom } from '../usePinchZoom';
 import { RotateCcw, ZoomIn, ZoomOut, Eraser, X, Magnet } from 'lucide-react';
-import { Monitor, MountKind, MountOption } from '../types';
-import { getCurveGeometry, getMonitorSizePx, pickMountMembers } from '../utils';
-import { PPI_SCALE, MOUNT_CAPACITY } from '../constants';
+import { Monitor, MonitorChanges, MountKind, MountOption } from '../types';
+import { getCurveGeometry, getItemLabel, getLaptopBody, getMonitorSizePx, isCase, isDeskItem, isLaptop, isPeripheral, pickMountMembers } from '../utils';
+import { PPI_SCALE, MOUNT_CAPACITY, DESK_ITEM_DEPTH, LAPTOP_DEFAULT_TILT } from '../constants';
 
 interface Scene3DProps {
   monitors: Monitor[];
   theme: 'dark' | 'light';
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
   onApplyMount: (monitorId: string, option: MountOption) => void;
   onClearMounts: () => void;
   onMoveMonitor: (id: string, x: number, y: number, snapThreshold: number) => void;
-  onUpdateMonitor: (id: string, changes: Partial<Pick<Monitor, 'angle' | 'depth'>>) => void;
+  onUpdateMonitor: (id: string, changes: MonitorChanges) => void;
 }
 
 interface Framing {
@@ -51,6 +54,18 @@ const ANGLE_SNAP = 15;
 const ANGLE_MAGNET = 4;
 const WRAP_STEP = 30;
 const ANGLE_PRESETS = [-45, -30, -15, 0, 15, 30, 45];
+
+// Leaning monitors forward/back, and opening laptop lids, in degrees
+const TILT_MIN = -15;
+const TILT_MAX = 25;
+const TILT_PRESETS = [-10, -5, 0, 5, 10, 15, 20];
+const LID_MAX = 60;
+const LID_PRESETS = [100, 110, 120, 135];
+
+const snapTilt = (deg: number) => {
+  const rounded = Math.round(deg);
+  return Math.abs(deg) < 1.5 ? 0 : rounded;
+};
 
 // Moving monitors forward and back, in inches
 const DEPTH_LIMIT = 36;
@@ -125,7 +140,12 @@ const computePlacements = (boxes: Box[], middleX: number, joinEdges: boolean) =>
   const innerNeighbour = (b: Box) => {
     let best: { box: Box; onLeft: boolean; overlap: number } | null = null;
     boxes.forEach(o => {
-      if (o === b || centreDist(o) >= centreDist(b) - 0.5) return;
+      if (o === b || isDeskItem(o.monitor)) return;
+      // Hinge onto a neighbour nearer the middle; when two are equally near (a centred pair),
+      // the right one hinges onto the left so the pair stays joined
+      const nearer = centreDist(o) < centreDist(b) - 0.5;
+      const tiedOnLeft = Math.abs(centreDist(o) - centreDist(b)) <= 0.5 && o.x < b.x;
+      if (!nearer && !tiedOnLeft) return;
       const overlap = Math.min(b.y + b.h, o.y + o.h) - Math.max(b.y, o.y);
       if (overlap <= 0) return;
       const onLeft = Math.abs(o.x + o.w - b.x) < EDGE_TOLERANCE;
@@ -140,7 +160,7 @@ const computePlacements = (boxes: Box[], middleX: number, joinEdges: boolean) =>
     if (known) return known;
     const yaw = b.monitor.angle ?? 0;
     const depth = (b.monitor.depth ?? 0) * PPI_SCALE;
-    const hinge = joinEdges ? innerNeighbour(b) : null;
+    const hinge = joinEdges && !isDeskItem(b.monitor) ? innerNeighbour(b) : null;
     let placement: Placement;
     if (hinge) {
       const parent = place(hinge.box);
@@ -184,14 +204,15 @@ const Face: React.FC<{
 const Cuboid: React.FC<{
   w: number; h: number; d: number; style?: React.CSSProperties;
   front?: React.ReactNode; frontClass: string; sideClass: string; topClass: string;
+  side?: React.ReactNode; sideFaceClass?: string; top?: React.ReactNode;
   events?: React.DOMAttributes<HTMLDivElement>;
-}> = ({ w, h, d, style, front, frontClass, sideClass, topClass, events }) => (
+}> = ({ w, h, d, style, front, frontClass, sideClass, topClass, side, sideFaceClass, top, events }) => (
   <div className="absolute" style={{ width: w, height: h, transformStyle: 'preserve-3d', ...style }} {...events}>
     <Face fw={w} fh={h} boxW={w} boxH={h} transform={`translateZ(${d / 2}px)`} className={frontClass}>{front}</Face>
     <Face fw={w} fh={h} boxW={w} boxH={h} transform={`rotateY(180deg) translateZ(${d / 2}px)`} className={sideClass} />
-    <Face fw={d} fh={h} boxW={w} boxH={h} transform={`rotateY(90deg) translateZ(${w / 2}px)`} className={sideClass} />
-    <Face fw={d} fh={h} boxW={w} boxH={h} transform={`rotateY(-90deg) translateZ(${w / 2}px)`} className={sideClass} />
-    <Face fw={w} fh={d} boxW={w} boxH={h} transform={`rotateX(90deg) translateZ(${h / 2}px)`} className={topClass} />
+    <Face fw={d} fh={h} boxW={w} boxH={h} transform={`rotateY(90deg) translateZ(${w / 2}px)`} className={sideFaceClass ?? sideClass}>{side}</Face>
+    <Face fw={d} fh={h} boxW={w} boxH={h} transform={`rotateY(-90deg) translateZ(${w / 2}px)`} className={sideFaceClass ?? sideClass}>{side}</Face>
+    <Face fw={w} fh={d} boxW={w} boxH={h} transform={`rotateX(90deg) translateZ(${h / 2}px)`} className={topClass}>{top}</Face>
     <Face fw={w} fh={d} boxW={w} boxH={h} transform={`rotateX(-90deg) translateZ(${h / 2}px)`} className={sideClass} />
   </div>
 );
@@ -234,7 +255,7 @@ const MountGlyph: React.FC<{ option: MountOption }> = ({ option }) => {
   );
 };
 
-const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClearMounts, onMoveMonitor, onUpdateMonitor }) => {
+const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, selectedId, onSelect, onApplyMount, onClearMounts, onMoveMonitor, onUpdateMonitor }) => {
   const isDark = theme === 'dark';
   const containerRef = useRef<HTMLDivElement>(null);
   const [camera, setCamera] = useState<Camera>(DEFAULT_CAMERA);
@@ -244,18 +265,23 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
   // Moving a monitor; the framing is frozen meanwhile so the scene doesn't re-centre under the cursor
   const moveRef = useRef<{
-    id: string; mode: 'move' | 'rotate' | 'depth'; startX: number; startY: number;
-    initX: number; initY: number; initAngle: number; initDepth: number; unitsZ: number; unitsX: number; unitsY: number; scale: number;
+    id: string; mode: 'move' | 'rotate' | 'depth' | 'slide'; startX: number; startY: number;
+    // Slide mode: everything carried along (a monitor on its stand, or every monitor on an arm)
+    group: { id: string; x: number; depth: number }[];
+    initX: number; initY: number; initAngle: number; initDepth: number; unitsZ: number; deskItem: boolean; unitsX: number; unitsY: number; scale: number;
   } | null>(null);
   const frozenFrameRef = useRef<Framing | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
 
   // Rotation
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [joinEdges, setJoinEdges] = useState(true);
 
   // Mount drag-and-drop
   const [draggedMount, setDraggedMount] = useState<MountOption | null>(null);
+  // Touch-friendly alternative to dragging: tap a mount, then tap a monitor
+  const [armedMount, setArmedMount] = useState<MountOption | null>(null);
+  // On phones only one of the bottom panels shows at a time
+  const [mobilePanel, setMobilePanel] = useState<'mounts' | 'position' | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
 
   // --- GEOMETRY ---
@@ -268,9 +294,13 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
     // Earlier monitors are drawn on top in 2D, so push overlapped later ones further back
     boxes.forEach((box, i) => {
+      if (isDeskItem(box.monitor)) {
+        box.backZ = box.z;
+        return;
+      }
       let layer = 0;
       for (let j = 0; j < i; j++) {
-        if (overlaps(box, boxes[j])) layer = Math.max(layer, Math.round(-boxes[j].z / (BODY_DEPTH + LAYER_GAP)) + 1);
+        if (!isDeskItem(boxes[j].monitor) && overlaps(box, boxes[j])) layer = Math.max(layer, Math.round(-boxes[j].z / (BODY_DEPTH + LAYER_GAP)) + 1);
       }
       box.z = -layer * (BODY_DEPTH + LAYER_GAP);
       box.backZ = box.z - box.curveDepth / 2 - BODY_DEPTH / 2;
@@ -280,8 +310,16 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
     const minX = Math.min(...boxes.map(b => b.x));
     const maxX = Math.max(...boxes.map(b => b.x + b.w));
-    const minY = Math.min(...boxes.map(b => b.y));
-    const maxY = Math.max(...boxes.map(b => b.y + b.h));
+    const wall = boxes.filter(b => !isDeskItem(b.monitor));
+    if (wall.length === 0) {
+      // Only desk items: the desk is the floor and the tallest item sets the height
+      const tallest = Math.max(...boxes.map(b =>
+        (isLaptop(b.monitor) ? getLaptopBody(b.monitor).lidH : Math.max(b.monitor.size?.h ?? 2, 6)) * PPI_SCALE
+      ));
+      return { boxes, bounds: { minX, maxX, minY: -tallest, maxY: 0 }, deskY: 0 };
+    }
+    const minY = Math.min(...wall.map(b => b.y));
+    const maxY = Math.max(...wall.map(b => b.y + b.h));
     return { boxes, bounds: { minX, maxX, minY, maxY }, deskY: maxY + STAND_CLEARANCE };
   }, [monitors]);
 
@@ -320,7 +358,7 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
   }, [sceneW, sceneH]);
 
   // --- ORBIT HANDLERS ---
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     e.preventDefault();
     dragRef.current = { startX: e.clientX, startY: e.clientY, yaw: camera.yaw, pitch: camera.pitch, moved: false };
@@ -329,7 +367,7 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
   useEffect(() => {
     if (!isDragging) return;
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       const drag = dragRef.current;
       if (!drag) return;
       if (Math.abs(e.clientX - drag.startX) + Math.abs(e.clientY - drag.startY) > 3) drag.moved = true;
@@ -340,18 +378,33 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
         pitch: Math.max(-80, Math.min(-2, drag.pitch - (e.clientY - drag.startY) * 0.3)),
       }));
     };
-    const handleMouseUp = () => {
-      if (dragRef.current && !dragRef.current.moved) setSelectedId(null);
+    const handlePointerUp = () => {
+      if (dragRef.current && !dragRef.current.moved) onSelect(null);
       dragRef.current = null;
       setIsDragging(false);
     };
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
     };
   }, [isDragging]);
+
+  // Two-finger pinch zooms the camera and cancels whatever one-finger drag had started
+  usePinchZoom(
+    containerRef,
+    factor => setCamera(c => ({ ...c, zoom: Math.max(0.3, Math.min(4, c.zoom * factor)) })),
+    () => {
+      dragRef.current = null;
+      setIsDragging(false);
+      moveRef.current = null;
+      frozenFrameRef.current = null;
+      setMovingId(null);
+    }
+  );
 
   // Non-passive wheel listener so the page doesn't scroll while zooming
   useEffect(() => {
@@ -379,22 +432,33 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
   const frame: Framing = (movingId && frozenFrameRef.current) || { centerX, centerY, fitScale };
   const scale = frame.fitScale * camera.zoom;
 
-  const handleMonitorMouseDown = (e: React.MouseEvent, id: string) => {
+  // `slideIds` set: dragging a stand or arm pole, which carries its monitors across the desk
+  const handleMonitorPointerDown = (e: React.PointerEvent, id: string, slideIds?: string[]) => {
     if (e.button !== 0) return;
     const monitor = monitors.find(m => m.id === id);
     if (!monitor) return;
     e.preventDefault();
     e.stopPropagation();
-    setSelectedId(id);
+    if (armedMount) {
+      if (!isDeskItem(monitor)) onApplyMount(id, armedMount);
+      setArmedMount(null);
+      return;
+    }
+    onSelect(id);
     // Screen pixels per canvas unit along x and y, allowing for how far the wall is turned away
     const yaw = camera.yaw * Math.PI / 180;
     const pitch = camera.pitch * Math.PI / 180;
     const cosYaw = Math.cos(yaw);
     moveRef.current = {
       id,
-      mode: e.shiftKey ? 'rotate' : e.altKey ? 'depth' : 'move',
+      mode: slideIds ? 'slide' : e.shiftKey ? 'rotate' : e.altKey ? 'depth' : 'move',
+      group: (slideIds ?? []).map(gid => {
+        const m = monitors.find(other => other.id === gid)!;
+        return { id: gid, x: m.x, depth: m.depth ?? 0 };
+      }),
       initAngle: monitor.angle ?? 0,
       initDepth: monitor.depth ?? 0,
+      deskItem: isDeskItem(monitor),
       // Screen pixels per inch of depth. The desk is heavily foreshortened from the usual camera
       // angle, so a true projection makes depth jumpy; a fixed rate feels steadier.
       unitsZ: scale * PPI_SCALE * 0.8,
@@ -412,7 +476,7 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
   useEffect(() => {
     if (!movingId) return;
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       const move = moveRef.current;
       if (!move) return;
       if (move.mode === 'rotate') {
@@ -420,8 +484,27 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
         onUpdateMonitor(move.id, { angle: snapAngle(move.initAngle + (e.clientX - move.startX) * 0.4, 5) });
         return;
       }
+      if (move.mode === 'slide') {
+        const dx = (e.clientX - move.startX) / move.unitsX;
+        const dz = (e.clientY - move.startY) / move.unitsZ;
+        if (move.group.length === 1) {
+          // One monitor on its stand: snap sideways to neighbours and in depth like Alt-drag
+          const [only] = move.group;
+          onMoveMonitor(only.id, only.x + dx, move.initY, 15 / move.scale);
+          onUpdateMonitor(only.id, { depth: snapDepth(only.depth + dz, otherDepths(only.id)) });
+        } else {
+          // A whole arm: every monitor moves by the same amount so the group keeps its shape
+          move.group.forEach(g => onUpdateMonitor(g.id, { x: g.x + dx, depth: Math.round((g.depth + dz) * 2) / 2 }));
+        }
+        return;
+      }
       if (move.mode === 'depth') {
         // Dragging up pushes the monitor back, dragging down pulls it towards you
+        onUpdateMonitor(move.id, { depth: snapDepth(move.initDepth + (e.clientY - move.startY) / move.unitsZ, otherDepths(move.id)) });
+        return;
+      }
+      if (move.deskItem) {
+        onMoveMonitor(move.id, move.initX + (e.clientX - move.startX) / move.unitsX, move.initY, 15 / move.scale);
         onUpdateMonitor(move.id, { depth: snapDepth(move.initDepth + (e.clientY - move.startY) / move.unitsZ, otherDepths(move.id)) });
         return;
       }
@@ -432,12 +515,14 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
         15 / move.scale
       );
     };
-    const handleMouseUp = () => { moveRef.current = null; frozenFrameRef.current = null; setMovingId(null); };
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
+    const handlePointerUp = () => { moveRef.current = null; frozenFrameRef.current = null; setMovingId(null); };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
     };
   }, [movingId, onMoveMonitor, onUpdateMonitor, monitors]);
 
@@ -445,11 +530,13 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
   const otherDepths = (id: string) => monitors.filter(m => m.id !== id && m.depth).map(m => m.depth as number);
   const setDepth = (id: string, depth: number) => onUpdateMonitor(id, { depth: snapDepth(depth, otherDepths(id)) });
+  const setTilt = (id: string, tilt: number) => onUpdateMonitor(id, { tilt: snapTilt(tilt) });
 
   // Turn every monitor towards the middle, 30° more for each hinge away from it
   const wrapAround = () => {
     const hinged = computePlacements(boxes, centerX, true);
     boxes.forEach(b => {
+      if (isDeskItem(b.monitor)) return;
       const hops = hinged.get(b.monitor.id)?.hops ?? 0;
       const side = b.x + b.w / 2 < centerX ? 1 : -1;
       onUpdateMonitor(b.monitor.id, { angle: hops === 0 ? 0 : side * Math.min(90, hops * WRAP_STEP) });
@@ -457,13 +544,24 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
     setJoinEdges(true);
   };
 
-  const flattenAll = () => boxes.forEach(b => onUpdateMonitor(b.monitor.id, { angle: 0, depth: 0 }));
+  const flattenAll = () => boxes.forEach(b =>
+    onUpdateMonitor(b.monitor.id, { angle: 0, depth: DESK_ITEM_DEPTH[b.monitor.kind ?? 'monitor'] })
+  );
+
+  // Stands and arm poles: drag to carry the attached monitor(s) across the desk
+  const supportEvents = (ids: string[]): React.DOMAttributes<HTMLDivElement> => ({
+    onPointerDown: e => handleMonitorPointerDown(e, ids[0], ids),
+    onDoubleClick: e => e.stopPropagation(),
+  });
+  const supportStyle = (ids: string[]): React.CSSProperties => ({
+    cursor: ids.includes(movingId ?? '') ? 'grabbing' : 'grab',
+  });
 
   const monitorEvents = (id: string): React.DOMAttributes<HTMLDivElement> => ({
-    onMouseDown: e => handleMonitorMouseDown(e, id),
+    onPointerDown: e => handleMonitorPointerDown(e, id),
     onDoubleClick: e => e.stopPropagation(),
     onDragOver: e => {
-      if (!draggedMount) return;
+      if (!draggedMount || isDeskItem(monitors.find(m => m.id === id)!)) return;
       e.preventDefault();
       e.stopPropagation();
       e.dataTransfer.dropEffect = 'copy';
@@ -479,14 +577,19 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
   const deskW = sceneW + 40 * PPI_SCALE;
   const placedZ = boxes.map(b => placements.get(b.monitor.id)?.cz ?? b.z);
-  const deskFront = Math.max(18 * PPI_SCALE, Math.max(0, ...placedZ) + 10 * PPI_SCALE);
+  const placedFront = boxes.map((b, i) =>
+    placedZ[i] + (isLaptop(b.monitor) ? (getLaptopBody(b.monitor).baseD + 4) * PPI_SCALE
+      : isPeripheral(b.monitor) ? ((b.monitor.size?.d ?? 5) + 4) * PPI_SCALE
+      : 10 * PPI_SCALE)
+  );
+  const deskFront = Math.max(18 * PPI_SCALE, ...placedFront);
   const deskBack = Math.min(-12 * PPI_SCALE, Math.min(0, ...placedZ) - 14 * PPI_SCALE);
   const deskD = deskFront - deskBack;
   // A monitor on a stand gets one unless another monitor sits directly beneath its centre
   const standing = boxes.filter(b => {
-    if (b.monitor.mount) return false;
+    if (b.monitor.mount || isDeskItem(b.monitor)) return false;
     const cx = b.x + b.w / 2;
-    return !boxes.some(o => o !== b && o.y >= b.y + b.h - 1 && cx > o.x && cx < o.x + o.w);
+    return !boxes.some(o => o !== b && !isDeskItem(o.monitor) && o.y >= b.y + b.h - 1 && cx > o.x && cx < o.x + o.w);
   });
 
   const bodySide = isDark ? 'bg-slate-700' : 'bg-slate-600';
@@ -506,7 +609,205 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
     </div>
   );
 
+  // A laptop on the desk: keyboard base with the lid hinged at its back edge, leaning back
+  const renderLaptop = (b: Box) => {
+    const id = b.monitor.id;
+    const body = getLaptopBody(b.monitor);
+    const lidW = body.lidW * PPI_SCALE, lidH = body.lidH * PPI_SCALE, lidT = body.lidT * PPI_SCALE;
+    const baseW = body.baseW * PPI_SCALE, baseD = body.baseD * PPI_SCALE, baseT = body.baseT * PPI_SCALE;
+    const cx = b.x + b.w / 2;
+    const hingeY = deskY - baseT;
+    const keysW = baseW * 0.86, keysD = baseD * 0.42;
+    const padW = baseW * 0.36, padD = baseD * 0.28;
+    const keysZ = b.z + 0.6 * PPI_SCALE + keysD / 2;
+    const padZ = b.z + 0.6 * PPI_SCALE + keysD + 0.5 * PPI_SCALE + padD / 2;
+    const selectedClass = selectedId === id ? 'outline outline-[5px] outline-amber-400' : '';
+    const shell = isDark ? 'bg-zinc-600' : 'bg-zinc-400';
+    const shellTop = isDark ? 'bg-zinc-500' : 'bg-zinc-300';
+    const moveStyle: React.CSSProperties = { cursor: movingId === id ? 'move' : 'grab' };
+
+    return (
+      <React.Fragment key={id}>
+        <Cuboid
+          w={lidW} h={lidH} d={lidT}
+          style={{ left: cx - lidW / 2, top: hingeY - lidH, transformOrigin: '50% 100%', transform: `translateZ(${b.z + lidT / 2}px) rotateX(${b.monitor.tilt ?? LAPTOP_DEFAULT_TILT}deg)`, ...moveStyle }}
+          frontClass={`bg-slate-900 rounded-t-md ${selectedClass}`}
+          sideClass={shell}
+          topClass={shellTop}
+          events={monitorEvents(id)}
+          front={
+            <div
+              className="absolute rounded-[1px] overflow-hidden"
+              style={{ left: 0.3 * PPI_SCALE, right: 0.3 * PPI_SCALE, top: 0.3 * PPI_SCALE, bottom: 0.6 * PPI_SCALE }}
+            >
+              <div className={`absolute inset-0 ${b.monitor.color} brightness-110 saturate-125`} />
+              <div className="absolute inset-0 bg-gradient-to-br from-white/25 via-transparent to-black/30" />
+              {screenLabel(b.monitor)}
+            </div>
+          }
+        />
+        <Cuboid
+          w={baseW} h={baseT} d={baseD}
+          style={{ left: cx - baseW / 2, top: hingeY, transform: `translateZ(${b.z + baseD / 2}px)`, ...moveStyle }}
+          frontClass={shell}
+          sideClass={shell}
+          topClass={shellTop}
+          events={monitorEvents(id)}
+        />
+        {/* Keyboard and trackpad, lying just above the base */}
+        <div
+          className="absolute pointer-events-none rounded-sm"
+          style={{
+            width: keysW, height: keysD, left: cx - keysW / 2, top: hingeY - keysD / 2 - 0.5,
+            transform: `translateZ(${keysZ}px) rotateX(90deg)`,
+            background: isDark ? '#27272a' : '#3f3f46',
+            backgroundImage: `repeating-linear-gradient(90deg, transparent 0 ${keysW / 15 - 2}px, ${isDark ? '#52525b' : '#71717a'} ${keysW / 15 - 2}px ${keysW / 15}px), repeating-linear-gradient(0deg, transparent 0 ${keysD / 6 - 2}px, ${isDark ? '#52525b' : '#71717a'} ${keysD / 6 - 2}px ${keysD / 6}px)`,
+          }}
+        />
+        <div
+          className={`absolute pointer-events-none rounded ${isDark ? 'bg-zinc-500' : 'bg-zinc-300'}`}
+          style={{ width: padW, height: padD, left: cx - padW / 2, top: hingeY - padD / 2 - 0.5, transform: `translateZ(${padZ}px) rotateX(90deg)` }}
+        />
+      </React.Fragment>
+    );
+  };
+
+  // Keyboards and mice lie on the desk, back edge at the item's depth line
+  const renderPeripheral = (b: Box) => {
+    const id = b.monitor.id;
+    const size = b.monitor.size ?? { w: 4, d: 4, h: 1 };
+    const W = size.w * PPI_SCALE, D = size.d * PPI_SCALE, H = size.h * PPI_SCALE;
+    const cx = b.x + b.w / 2;
+    const isKeyboard = b.monitor.kind === 'keyboard';
+    const isPad = b.monitor.name === 'Trackpad';
+    const bodyH = isKeyboard ? H * 0.7 : isPad ? H : H * 0.6;
+    const topY = deskY - bodyH;
+    const moveStyle: React.CSSProperties = { cursor: movingId === id ? 'move' : 'grab' };
+    const selectedClass = selectedId === id ? 'outline outline-[3px] outline-amber-400' : '';
+    const shell = isDark ? 'bg-zinc-800' : 'bg-zinc-400';
+    const shellTop = isDark ? 'bg-zinc-700' : 'bg-zinc-300';
+    const rounded = isKeyboard ? 'rounded-md' : isPad ? 'rounded-lg' : 'rounded-[45%]';
+
+    return (
+      <React.Fragment key={id}>
+        <Cuboid
+          w={W} h={bodyH} d={D}
+          style={{ left: cx - W / 2, top: topY, transform: `translateZ(${b.z + D / 2}px)`, ...moveStyle }}
+          frontClass={`${shell} ${isKeyboard ? 'rounded-sm' : 'rounded-md'}`}
+          sideClass={`${shell} ${isKeyboard ? 'rounded-sm' : 'rounded-md'}`}
+          topClass={`${shellTop} ${rounded}`}
+          events={monitorEvents(id)}
+        />
+        {/* Top surface: keycaps for keyboards, buttons and a wheel for mice */}
+        <div
+          className={`absolute pointer-events-none ${rounded} ${b.monitor.color} ${selectedClass}`}
+          style={{
+            width: isKeyboard ? W * 0.95 : W,
+            height: isKeyboard ? D * 0.88 : D,
+            left: cx - (isKeyboard ? W * 0.95 : W) / 2,
+            top: topY - (isKeyboard ? D * 0.88 : D) / 2 - 0.5,
+            transform: `translateZ(${b.z + D / 2}px) rotateX(90deg)`,
+            backgroundImage: isKeyboard
+              ? 'linear-gradient(90deg, rgba(0,0,0,0.45) 1.5px, transparent 1.5px), linear-gradient(rgba(0,0,0,0.45) 1.5px, transparent 1.5px)'
+              : isPad ? 'linear-gradient(135deg, rgba(255,255,255,0.15), transparent 60%)'
+              : 'linear-gradient(90deg, transparent calc(50% - 1px), rgba(0,0,0,0.5) calc(50% - 1px), rgba(0,0,0,0.5) calc(50% + 1px), transparent calc(50% + 1px))',
+            backgroundSize: isKeyboard ? `${0.75 * PPI_SCALE}px ${(D * 0.88) / 6}px` : isPad ? undefined : '100% 40%',
+            backgroundRepeat: isKeyboard || isPad ? undefined : 'no-repeat',
+            filter: 'brightness(0.85)',
+          }}
+        >
+          {!isKeyboard && !isPad && (
+            <div className="absolute left-1/2 -translate-x-1/2 rounded-full bg-black/60" style={{ top: D * 0.14, width: W * 0.12, height: D * 0.16 }} />
+          )}
+        </div>
+      </React.Fragment>
+    );
+  };
+
+  // A PC case: mesh front with a power button, glass side panels glowing in the item's colour
+  const renderCase = (b: Box) => {
+    const id = b.monitor.id;
+    const size = b.monitor.size ?? { w: 8, d: 16, h: 18 };
+    const lying = !!b.monitor.lying;
+    // On its side the case is as wide as it was tall, and as tall as it was wide
+    const W = (lying ? size.h : size.w) * PPI_SCALE, D = size.d * PPI_SCALE, H = (lying ? size.w : size.h) * PPI_SCALE;
+    const cx = b.x + b.w / 2;
+    const small = size.h < 6; // Mac mini / Mac Studio style boxes: plain aluminium, no glass
+    const moveStyle: React.CSSProperties = { cursor: movingId === id ? 'move' : 'grab' };
+    const shell = isDark ? 'bg-zinc-900' : 'bg-zinc-700';
+    const shellTop = isDark ? 'bg-zinc-800' : 'bg-zinc-600';
+    const selectedClass = selectedId === id ? 'outline outline-[4px] outline-amber-400' : '';
+
+    if (small) {
+      return (
+        <Cuboid
+          key={id}
+          w={W} h={H} d={D}
+          style={{ left: cx - W / 2, top: deskY - H, transform: `translateZ(${b.z + D / 2}px)`, ...moveStyle }}
+          frontClass={`bg-zinc-300 rounded-sm ${selectedClass}`}
+          sideClass="bg-zinc-400 rounded-sm"
+          topClass="bg-zinc-200 rounded-lg"
+          events={monitorEvents(id)}
+          front={<div className="absolute rounded-full bg-emerald-400" style={{ width: 3, height: 3, right: W * 0.1, bottom: H * 0.3 }} />}
+        />
+      );
+    }
+
+    // Tempered glass panel: on the sides when upright, facing up when lying down
+    const glass = (
+      <div className="absolute inset-[6%] rounded-sm overflow-hidden bg-black/50 border border-white/10">
+        {/* Tempered glass: interior glow, motherboard and graphics card silhouettes */}
+        <div className={`absolute inset-0 ${b.monitor.color} opacity-25`} />
+        <div className="absolute bg-zinc-800/90 rounded-sm" style={{ left: '10%', right: '35%', top: '8%', bottom: '42%' }} />
+        <div className={`absolute rounded-sm ${b.monitor.color} opacity-70`} style={{ left: '8%', right: '20%', top: '60%', height: '9%' }} />
+        <div className="absolute inset-0 bg-gradient-to-br from-white/20 via-transparent to-transparent" />
+      </div>
+    );
+
+    return (
+      <Cuboid
+        key={id}
+        w={W} h={H} d={D}
+        style={{ left: cx - W / 2, top: deskY - H, transform: `translateZ(${b.z + D / 2}px)`, ...moveStyle }}
+        frontClass={`${shell} rounded-sm ${selectedClass}`}
+        sideClass={shell}
+        topClass={shellTop}
+        sideFaceClass={`${shell} rounded-sm`}
+        events={monitorEvents(id)}
+        front={
+          <>
+            {/* Intake mesh with fans glowing through it */}
+            <div
+              className="absolute rounded-sm overflow-hidden"
+              style={{
+                left: '10%', right: '10%', top: '12%', bottom: '8%',
+                backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.18) 1px, transparent 1.5px)',
+                backgroundSize: '5px 5px',
+              }}
+            >
+              {[0.2, 0.5, 0.8].map(t => (
+                <div
+                  key={t}
+                  className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 opacity-60 ${b.monitor.color.replace('bg-', 'border-')}`}
+                  style={lying
+                    ? { left: `${t * 100}%`, top: '50%', width: H * 0.55, height: H * 0.55 }
+                    : { left: '50%', top: `${t * 100}%`, width: W * 0.55, height: W * 0.55 }}
+                />
+              ))}
+            </div>
+            <div className="absolute rounded-full bg-white/80" style={{ width: 4, height: 4, top: H * 0.04, right: W * 0.12 }} />
+          </>
+        }
+        side={lying ? undefined : glass}
+        top={lying ? glass : undefined}
+      />
+    );
+  };
+
   const renderMonitor = (b: Box) => {
+    if (isCase(b.monitor)) return renderCase(b);
+    if (isPeripheral(b.monitor)) return renderPeripheral(b);
+    if (isLaptop(b.monitor)) return renderLaptop(b);
     const id = b.monitor.id;
     const highlighted = previewIds.has(id);
     const isSelected = selectedId === id && !highlighted;
@@ -604,13 +905,15 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
       <React.Fragment key="stand">
         <Cuboid
           w={NECK_WIDTH} h={neckH} d={NECK_DEPTH}
-          style={{ left: b.x + b.w / 2 - NECK_WIDTH / 2, top: neckTop, transform: `translateZ(${neckZ}px)` }}
+          style={{ left: b.x + b.w / 2 - NECK_WIDTH / 2, top: neckTop, transform: `translateZ(${neckZ}px)`, ...supportStyle([b.monitor.id]) }}
           frontClass={bodyBack} sideClass={bodySide} topClass={bodyTop}
+          events={supportEvents([b.monitor.id])}
         />
         <Cuboid
           w={BASE_WIDTH} h={6} d={BASE_DEPTH}
-          style={{ left: b.x + b.w / 2 - BASE_WIDTH / 2, top: deskY - 6, transform: `translateZ(${neckZ + BASE_DEPTH / 2 - NECK_DEPTH}px)` }}
+          style={{ left: b.x + b.w / 2 - BASE_WIDTH / 2, top: deskY - 6, transform: `translateZ(${neckZ + BASE_DEPTH / 2 - NECK_DEPTH}px)`, ...supportStyle([b.monitor.id]) }}
           frontClass={bodySide} sideClass={bodySide} topClass={bodyTop}
+          events={supportEvents([b.monitor.id])}
         />
       </React.Fragment>
     );
@@ -637,12 +940,29 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
       left: 0,
       top: 0,
       transformStyle: 'preserve-3d',
-      transformOrigin: `${cx}px ${cy}px ${b.z}px`,
+      // Keyboards and mice turn about their middle; screens about their back
+      transformOrigin: `${cx}px ${cy}px ${isPeripheral(b.monitor) ? b.z + (b.monitor.size?.d ?? 0) * PPI_SCALE / 2 : b.z}px`,
       transform: `translate3d(${dx}px, 0, ${dz}px) rotateY(${p?.yaw ?? 0}deg)`,
     };
   };
 
   const standingIds = new Set(standing.map(b => b.monitor.id));
+
+  // Leans a monitor (and its VESA plate) about where the stand neck or arm meets it
+  const tiltStyle = (b: Box): React.CSSProperties => {
+    const tilt = isDeskItem(b.monitor) ? 0 : b.monitor.tilt ?? 0;
+    const pivotY = b.monitor.mount ? b.y + b.h / 2 : b.y + b.h * 0.4;
+    return {
+      position: 'absolute',
+      left: 0,
+      top: 0,
+      transformStyle: 'preserve-3d',
+      transformOrigin: `${b.x + b.w / 2}px ${pivotY}px ${b.backZ}px`,
+      transform: tilt ? `rotateX(${tilt}deg)` : undefined,
+    };
+  };
+
+  const hasWallMonitors = monitors.some(m => !isDeskItem(m));
 
   const panelClass = `backdrop-blur rounded-lg border shadow-xl z-30 transition-colors duration-300 ${isDark ? 'bg-slate-800/90 border-slate-700' : 'bg-white/90 border-slate-200'}`;
   const buttonClass = `p-2 rounded transition-colors ${isDark ? 'hover:bg-slate-700 text-slate-200' : 'hover:bg-slate-100 text-slate-600'}`;
@@ -651,8 +971,8 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
     <div
       ref={containerRef}
       className={`absolute inset-0 overflow-hidden select-none ${movingId ? 'cursor-move' : isDragging ? 'cursor-grabbing' : 'cursor-grab'} ${isDark ? 'bg-gradient-to-b from-slate-950 to-slate-900' : 'bg-gradient-to-b from-slate-200 to-slate-100'}`}
-      style={{ perspective: 2000 }}
-      onMouseDown={handleMouseDown}
+      style={{ perspective: 2000, touchAction: 'none' }}
+      onPointerDown={handlePointerDown}
       onDoubleClick={() => setCamera(DEFAULT_CAMERA)}
       onDragOver={e => { if (draggedMount) { e.preventDefault(); e.dataTransfer.dropEffect = 'none'; setDropTargetId(null); } }}
       onDrop={e => { e.preventDefault(); endMountDrag(); }}
@@ -699,17 +1019,20 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
                 const poleX = plates.reduce((sum, c) => sum + c.x, 0) / plates.length;
                 const poleZ = Math.min(...plates.map(c => c.z)) - POLE_OFFSET;
                 const poleTop = Math.min(...plates.map(c => c.cy)) - POLE_HEADROOM;
+                const groupIds = group.members.map(b => b.monitor.id);
                 return (
                   <React.Fragment key={`arm-${group.id}`}>
                     <Cuboid
                       w={POLE_SIZE} h={deskY - poleTop} d={POLE_SIZE}
-                      style={{ left: poleX - POLE_SIZE / 2, top: poleTop, transform: `translateZ(${poleZ}px)` }}
+                      style={{ left: poleX - POLE_SIZE / 2, top: poleTop, transform: `translateZ(${poleZ}px)`, ...supportStyle(groupIds) }}
                       frontClass={metalSide} sideClass={metalSide} topClass={metalTop}
+                      events={supportEvents(groupIds)}
                     />
                     <Cuboid
                       w={CLAMP_WIDTH} h={8} d={CLAMP_WIDTH}
-                      style={{ left: poleX - CLAMP_WIDTH / 2, top: deskY - 8, transform: `translateZ(${poleZ}px)` }}
+                      style={{ left: poleX - CLAMP_WIDTH / 2, top: deskY - 8, transform: `translateZ(${poleZ}px)`, ...supportStyle(groupIds) }}
                       frontClass={bodySide} sideClass={bodySide} topClass={bodyTop}
+                      events={supportEvents(groupIds)}
                     />
                     {plates.map(({ b, x, z, cy }) => {
                       const elbowX = (poleX + x) / 2;
@@ -729,8 +1052,10 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
               {boxes.map(b => (
                 <div key={b.monitor.id} style={placementStyle(b)}>
                   {standingIds.has(b.monitor.id) && renderStand(b)}
-                  {b.monitor.mount && renderVesaPlate(b)}
-                  {renderMonitor(b)}
+                  <div style={tiltStyle(b)}>
+                    {b.monitor.mount && renderVesaPlate(b)}
+                    {renderMonitor(b)}
+                  </div>
                 </div>
               ))}
             </>
@@ -740,8 +1065,8 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
 
       {/* Camera controls */}
       <div
-        className={`absolute top-4 right-4 flex gap-2 p-2 ${panelClass}`}
-        onMouseDown={e => e.stopPropagation()}
+        className={`absolute top-3 right-3 md:top-4 md:right-4 flex gap-1 md:gap-2 p-1 md:p-2 ${panelClass}`}
+        onPointerDown={e => e.stopPropagation()}
         onDoubleClick={e => e.stopPropagation()}
       >
         <button onClick={() => setCamera(c => ({ ...c, zoom: Math.max(0.3, c.zoom - 0.1) }))} className={buttonClass}>
@@ -758,11 +1083,11 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
         </button>
       </div>
 
-      {/* Mount palette */}
-      {monitors.length > 0 && (
+      {/* Mount palette (phones: shown from the bottom bar) */}
+      {hasWallMonitors && (
         <div
-          className={`absolute bottom-4 left-4 p-3 w-60 cursor-default ${panelClass}`}
-          onMouseDown={e => e.stopPropagation()}
+          className={`absolute inset-x-3 bottom-16 md:inset-x-auto md:left-4 md:bottom-4 md:w-60 p-3 cursor-default ${panelClass} ${mobilePanel === 'mounts' ? '' : 'hidden'} md:block`}
+          onPointerDown={e => e.stopPropagation()}
           onDoubleClick={e => e.stopPropagation()}
         >
           <div className="flex items-center justify-between mb-2">
@@ -786,12 +1111,13 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
                   setDraggedMount(opt.value);
                 }}
                 onDragEnd={endMountDrag}
+                onClick={() => setArmedMount(a => (a === opt.value ? null : opt.value))}
                 className={`flex flex-col items-center gap-1 py-2 rounded-md border cursor-grab active:cursor-grabbing transition-colors ${
-                  draggedMount === opt.value
+                  draggedMount === opt.value || armedMount === opt.value
                     ? 'border-sky-400 bg-sky-500/20 text-sky-400'
                     : isDark ? 'border-slate-700 text-slate-300 hover:border-slate-500 hover:bg-slate-700/60' : 'border-slate-200 text-slate-600 hover:border-slate-400 hover:bg-slate-100'
                 }`}
-                title={`${opt.hint}: drag onto a monitor`}
+                title={`${opt.hint}: drag onto a monitor, or tap it and then a monitor`}
               >
                 <MountGlyph option={opt.value} />
                 <span className="text-[10px] font-bold">{opt.label}</span>
@@ -799,28 +1125,30 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
             ))}
           </div>
           <p className={`text-[10px] mt-2 leading-snug ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
-            Drag onto a monitor. Dual and triple arms also take the nearest monitors.
+            {armedMount
+              ? `Now tap a monitor to give it the ${MOUNT_OPTIONS.find(o => o.value === armedMount)!.label.toLowerCase()} mount.`
+              : 'Drag onto a monitor, or tap one here and then a monitor. Dual and triple arms also take the nearest monitors.'}
           </p>
         </div>
       )}
 
-      <div className={`absolute top-6 left-1/2 -translate-x-1/2 text-xs font-medium pointer-events-none text-center ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
-        Drag a monitor to move it · Shift-drag to turn · Alt-drag to push back or pull forward · Drag elsewhere to orbit
+      <div className={`hidden xl:block absolute top-6 left-1/2 -translate-x-1/2 text-xs font-medium pointer-events-none text-center ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
+        Drag a screen to move it · Drag its stand to slide it across the desk · Shift-drag to turn · Drag empty space to orbit
       </div>
 
-      {/* Rotation panel */}
+      {/* Position panel (phones: shown from the bottom bar) */}
       {monitors.length > 0 && (
         <div
-          className={`absolute bottom-4 right-4 p-3 w-64 cursor-default ${panelClass}`}
-          onMouseDown={e => e.stopPropagation()}
+          className={`absolute inset-x-3 bottom-16 md:inset-x-auto md:right-4 md:bottom-4 md:w-64 p-3 cursor-default max-h-[60dvh] overflow-y-auto ${panelClass} ${mobilePanel === 'position' ? '' : 'hidden'} md:block`}
+          onPointerDown={e => e.stopPropagation()}
           onDoubleClick={e => e.stopPropagation()}
         >
           <div className="flex items-center justify-between mb-2">
             <span className={`text-xs font-bold uppercase tracking-wider ${isDark ? 'text-slate-300' : 'text-slate-700'}`}>
-              Position{selected ? ` · ${selected.diagonal}"` : ''}
+              Position{selected ? ` · ${getItemLabel(selected)}` : ''}
             </span>
             {selected && (
-              <button onClick={() => setSelectedId(null)} className={`p-0.5 rounded ${isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`} title="Deselect">
+              <button onClick={() => onSelect(null)} className={`p-0.5 rounded ${isDark ? 'text-slate-400 hover:bg-slate-700' : 'text-slate-500 hover:bg-slate-100'}`} title="Deselect">
                 <X size={14} />
               </button>
             )}
@@ -886,10 +1214,77 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
                   ))}
                 </div>
               </div>
+
+              {/* Monitors tilt up/down; laptops open their lid; keyboards and mice don't tilt */}
+              {!isPeripheral(selected) && (
+                <div className={`pt-2 mt-1 border-t ${isDark ? 'border-slate-700' : 'border-slate-200'}`}>
+                  {isLaptop(selected) ? (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-[10px] font-bold uppercase tracking-tight ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Lid angle</span>
+                        <span className={`text-xs font-mono ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{90 + (selected.tilt ?? LAPTOP_DEFAULT_TILT)}°</span>
+                      </div>
+                      <input
+                        type="range" min={0} max={LID_MAX} step={1}
+                        value={selected.tilt ?? LAPTOP_DEFAULT_TILT}
+                        onChange={(e) => onUpdateMonitor(selected.id, { tilt: parseInt(e.target.value) })}
+                        className="w-full h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                      />
+                      <div className="grid grid-cols-4 gap-1 mt-1.5">
+                        {LID_PRESETS.map(a => (
+                          <button
+                            key={a}
+                            onClick={() => onUpdateMonitor(selected.id, { tilt: a - 90 })}
+                            className={`py-1 rounded text-[10px] font-bold transition-colors ${
+                              90 + (selected.tilt ?? LAPTOP_DEFAULT_TILT) === a
+                                ? 'bg-amber-500 text-white'
+                                : isDark ? 'bg-slate-700/60 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {a}°
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-[10px] font-bold uppercase tracking-tight ${isDark ? 'text-slate-500' : 'text-slate-400'}`}>Tilt</span>
+                        <span className={`text-xs font-mono ${isDark ? 'text-slate-200' : 'text-slate-800'}`}>{(selected.tilt ?? 0) > 0 ? '+' : ''}{selected.tilt ?? 0}°</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`} title="Screen faces down">Down</span>
+                        <input
+                          type="range" min={TILT_MIN} max={TILT_MAX} step={1}
+                          value={selected.tilt ?? 0}
+                          onChange={(e) => setTilt(selected.id, parseInt(e.target.value))}
+                          className="flex-1 h-1.5 bg-slate-300 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                        />
+                        <span className={`text-[10px] font-bold ${isDark ? 'text-slate-500' : 'text-slate-400'}`} title="Screen faces up">Up</span>
+                      </div>
+                      <div className="grid grid-cols-7 gap-1 mt-1.5">
+                        {TILT_PRESETS.map(a => (
+                          <button
+                            key={a}
+                            onClick={() => setTilt(selected.id, a)}
+                            className={`py-1 rounded text-[10px] font-bold transition-colors ${
+                              (selected.tilt ?? 0) === a
+                                ? 'bg-amber-500 text-white'
+                                : isDark ? 'bg-slate-700/60 text-slate-300 hover:bg-slate-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                            }`}
+                          >
+                            {a > 0 ? `+${a}` : a}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <p className={`text-[10px] leading-snug ${isDark ? 'text-slate-500' : 'text-slate-500'}`}>
-              Click a monitor to turn it or move it forward and back. Shift-drag turns it, Alt-drag pushes it back or pulls it forward. Angles snap to 15° steps, depth to the wall line and to other monitors.
+              Tap or click an item to turn it, tilt it, or move it forward and back. Drag a stand or arm pole to slide its monitors across the desk. With a mouse, Shift-drag turns and Alt-drag moves depth. Angles snap to 15° steps, depth to the wall line and to other items.
             </p>
           )}
 
@@ -923,11 +1318,30 @@ const Scene3D: React.FC<Scene3DProps> = ({ monitors, theme, onApplyMount, onClea
         </div>
       )}
 
+      {/* Phones: one bottom panel at a time */}
+      {monitors.length > 0 && (
+        <div className="md:hidden absolute bottom-3 inset-x-3 flex justify-center gap-2 z-30" onPointerDown={e => e.stopPropagation()}>
+          {(hasWallMonitors ? (['mounts', 'position'] as const) : (['position'] as const)).map(panel => (
+            <button
+              key={panel}
+              onClick={() => setMobilePanel(p => (p === panel ? null : panel))}
+              className={`flex-1 max-w-[11rem] h-11 rounded-xl border shadow-xl backdrop-blur text-xs font-bold capitalize transition-colors ${
+                mobilePanel === panel
+                  ? 'bg-amber-500 border-amber-500 text-white'
+                  : isDark ? 'bg-slate-800/90 border-slate-700 text-slate-200' : 'bg-white/90 border-slate-200 text-slate-700'
+              }`}
+            >
+              {panel}{panel === 'position' && selected ? ` · ${getItemLabel(selected)}` : ''}
+            </button>
+          ))}
+        </div>
+      )}
+
       {monitors.length === 0 && (
         <div className={`absolute inset-0 flex items-center justify-center pointer-events-none text-center ${isDark ? 'text-slate-600' : 'text-slate-400'}`}>
           <div>
             <p className="text-lg font-semibold">Nothing to show in 3D</p>
-            <p className="text-sm opacity-70">Use the sidebar to add a display</p>
+            <p className="text-sm opacity-70">Open the Add tab to add a display</p>
           </div>
         </div>
       )}
